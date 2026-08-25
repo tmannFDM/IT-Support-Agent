@@ -14,5 +14,8 @@ class AgentState(TypedDict, total=False):
     session_id: str
     message: str
     intent: IntentLabel
+    used_context: bool
+    cited_sources: list[str]
+    retrieved_chunks: list[dict[str, object]]
     response: str
     error: str

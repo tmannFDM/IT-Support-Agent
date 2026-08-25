@@ -42,7 +42,10 @@ async def generate_chat_events(
         return
 
     response_text = state.get("response", "")
-    token_parts = response_text.split() if response_text.strip() else [response_text]
+    if state.get("intent") == "policy_question":
+        token_parts = [response_text]
+    else:
+        token_parts = response_text.split() if response_text.strip() else [response_text]
 
     for index, part in enumerate(token_parts):
         token = ChatStreamEvent(event_type="token", data=part if part else response_text)

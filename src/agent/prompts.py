@@ -8,9 +8,16 @@ DIRECT_RESPONSE_SYSTEM_PROMPT = (
     "Provide concise, helpful responses for non-policy requests."
 )
 
-LLM_API_URL_ENV = "LLM_API_URL"
-LLM_API_KEY_ENV = "LLM_API_KEY"
-LLM_MODEL_ENV = "LLM_MODEL"
-LLM_DEFAULT_API_URL = "https://api.openai.com/v1/chat/completions"
-LLM_DEFAULT_MODEL = "gpt-4o-mini"
+LLM_API_URL_ENV = "OLLAMA_API_URL"
+LLM_MODEL_ENV = "OLLAMA_MODEL"
+LLM_DEFAULT_API_URL = "http://localhost:11434/api/chat"
+LLM_DEFAULT_MODEL = "llama3.2:3b"
 PLACEHOLDER_UNSUPPORTED = "This type of request isn't supported yet."
+
+POLICY_FALLBACK_TEXT = "I don't have information on that policy."
+
+POLICY_GROUNDED_SYSTEM_PROMPT = (
+    "You are an IT support policy assistant. Answer only using the provided context. "
+    "If the context does not contain the answer, say you do not have that information. "
+    "Do not invent details."
+)
