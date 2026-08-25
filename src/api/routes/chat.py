@@ -41,8 +41,19 @@ async def generate_chat_events(
         yield format_sse(error_event)
         return
 
+    if "tool_payload_json" in state:
+        tool_call = ChatStreamEvent(event_type="tool_call", data=state["tool_payload_json"])
+        yield format_sse(tool_call)
+        await asyncio.sleep(0)
+
+        if await is_disconnected():
+            return
+
     response_text = state.get("response", "")
-    token_parts = response_text.split() if response_text.strip() else [response_text]
+    if state.get("single_token_response"):
+        token_parts = [response_text]
+    else:
+        token_parts = response_text.split() if response_text.strip() else [response_text]
 
     for index, part in enumerate(token_parts):
         token = ChatStreamEvent(event_type="token", data=part if part else response_text)

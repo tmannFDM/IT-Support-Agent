@@ -43,6 +43,53 @@ def test_chat_stream_direct_response_emits_intent_token_and_done() -> None:
     assert events[-1]["event_type"] == "done"
 
 
+def test_ticket_status_lookup_success_emits_tool_call_token_and_done() -> None:
+    response = client.post(
+        "/chat/stream",
+        json={"user_id": "u-10", "session_id": "s-10", "message": "status for tkt-1001"},
+    )
+
+    assert response.status_code == 200
+    events = _extract_sse_events(response.text)
+    assert [event["event_type"] for event in events[:4]] == ["intent", "tool_call", "token", "done"]
+    assert events[0]["data"] == "action_request"
+    tool_payload = json.loads(events[1]["data"])
+    assert tool_payload["ticket_id"] == "TKT-1001"
+    assert tool_payload["status"] == "open"
+    assert tool_payload["priority"] == "high"
+    assert tool_payload["summary"]
+    assert tool_payload["last_updated"].endswith("Z")
+
+
+def test_ticket_status_lookup_missing_id_emits_error_without_tool_call_or_done() -> None:
+    response = client.post(
+        "/chat/stream",
+        json={"user_id": "u-11", "session_id": "s-11", "message": "what is the status of my ticket"},
+    )
+
+    assert response.status_code == 200
+    events = _extract_sse_events(response.text)
+    assert events[0]["event_type"] == "intent"
+    assert events[1]["event_type"] == "error"
+    assert "Ticket ID is required" in events[1]["data"]
+    assert not any(event["event_type"] == "tool_call" for event in events)
+    assert not any(event["event_type"] == "done" for event in events)
+
+
+def test_ticket_status_lookup_unknown_id_emits_not_found_token_and_done() -> None:
+    response = client.post(
+        "/chat/stream",
+        json={"user_id": "u-12", "session_id": "s-12", "message": "status for TKT-9999"},
+    )
+
+    assert response.status_code == 200
+    events = _extract_sse_events(response.text)
+    assert [event["event_type"] for event in events[:3]] == ["intent", "token", "done"]
+    assert "not found" in events[1]["data"].lower()
+    assert not any(event["event_type"] == "error" for event in events)
+    assert not any(event["event_type"] == "tool_call" for event in events)
+
+
 @pytest.mark.parametrize(
     ("message", "expected_intent"),
     [

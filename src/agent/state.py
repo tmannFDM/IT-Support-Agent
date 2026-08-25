@@ -14,5 +14,9 @@ class AgentState(TypedDict, total=False):
     session_id: str
     message: str
     intent: IntentLabel
+    ticket_id: str
+    tool_name: str
+    tool_payload_json: str
+    single_token_response: bool
     response: str
     error: str
