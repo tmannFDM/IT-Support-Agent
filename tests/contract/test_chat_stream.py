@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 from src.api.main import app
 from src.api.routes import chat as chat_route
 from src.api.routes.chat import generate_chat_events
+from src.rag.retrieve import RetrievalResultItem, RetrievalResultSet
 from src.schemas.chat import ChatRequest
 
 client = TestClient(app)
@@ -18,6 +19,10 @@ def _extract_sse_events(body: str) -> list[dict[str, str]]:
         if line.startswith("data: "):
             events.append(json.loads(line[6:]))
     return events
+
+
+def _token_text(events: list[dict[str, str]]) -> str:
+    return " ".join(event["data"] for event in events if event["event_type"] == "token")
 
 
 @pytest.fixture(autouse=True)
@@ -46,13 +51,14 @@ def test_chat_stream_direct_response_emits_intent_token_and_done() -> None:
 @pytest.mark.parametrize(
     ("message", "expected_intent"),
     [
-        ("what is the policy for vpn", "policy_question"),
         ("please reset my password", "action_request"),
         ("please escalate this", "escalation"),
         ("how to exploit admin panel", "blocked"),
     ],
 )
-def test_non_direct_intents_emit_placeholder_then_done(message: str, expected_intent: str) -> None:
+def test_non_policy_non_direct_intents_emit_placeholder_then_done(
+    message: str, expected_intent: str
+) -> None:
     response = client.post(
         "/chat/stream",
         json={"user_id": "u-2", "session_id": "s-2", "message": message},
@@ -151,3 +157,171 @@ def test_disconnect_stops_before_done_event() -> None:
     assert events
     assert events[0]["event_type"] == "intent"
     assert not any(event["event_type"] == "done" for event in events)
+
+
+def test_policy_question_grounded_answer_emits_intent_token_and_done(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_retrieve(_query: str, top_k: int = 3, threshold: float = 0.35) -> RetrievalResultSet:
+        _ = (top_k, threshold)
+        item = RetrievalResultItem(
+            chunk_id="vpn_policy.md:1",
+            text="VPN requires manager approval.",
+            score=0.92,
+            policy_category="VPN",
+            source_document="vpn_policy.md",
+        )
+        return RetrievalResultSet(
+            query="policy question",
+            items=[item],
+            threshold=0.35,
+            above_threshold_items=[item],
+        )
+
+    async def fake_policy_llm(_question: str, _context: str) -> str:
+        return "VPN access requires manager approval."
+
+    monkeypatch.setattr("src.agent.nodes.retrieve_policy_chunks", fake_retrieve)
+    monkeypatch.setattr("src.agent.nodes.call_llm_policy_response", fake_policy_llm)
+
+    response = client.post(
+        "/chat/stream",
+        json={"user_id": "u-4", "session_id": "s-4", "message": "what is vpn policy"},
+    )
+
+    assert response.status_code == 200
+    events = _extract_sse_events(response.text)
+    assert events[0] == {"event_type": "intent", "data": "policy_question"}
+    assert events[-1]["event_type"] == "done"
+    token_text = _token_text(events)
+    assert "VPN access requires manager approval." in token_text
+    assert "vpn_policy.md" in token_text
+
+
+def test_policy_question_cross_category_includes_multiple_sources(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_retrieve(_query: str, top_k: int = 3, threshold: float = 0.35) -> RetrievalResultSet:
+        _ = (top_k, threshold)
+        vpn = RetrievalResultItem(
+            chunk_id="vpn_policy.md:2",
+            text="VPN uses MFA.",
+            score=0.89,
+            policy_category="VPN",
+            source_document="vpn_policy.md",
+        )
+        password = RetrievalResultItem(
+            chunk_id="password_policy.md:4",
+            text="MFA is mandatory.",
+            score=0.88,
+            policy_category="Password",
+            source_document="password_policy.md",
+        )
+        return RetrievalResultSet(
+            query="cross category",
+            items=[vpn, password],
+            threshold=0.35,
+            above_threshold_items=[vpn, password],
+        )
+
+    async def fake_policy_llm(_question: str, _context: str) -> str:
+        return "Use VPN with MFA and follow password controls."
+
+    monkeypatch.setattr("src.agent.nodes.retrieve_policy_chunks", fake_retrieve)
+    monkeypatch.setattr("src.agent.nodes.call_llm_policy_response", fake_policy_llm)
+
+    response = client.post(
+        "/chat/stream",
+        json={"user_id": "u-5", "session_id": "s-5", "message": "policy for vpn and password"},
+    )
+
+    assert response.status_code == 200
+    events = _extract_sse_events(response.text)
+    token_text = _token_text(events)
+    assert "vpn_policy.md" in token_text
+    assert "password_policy.md" in token_text
+    assert events[-1]["event_type"] == "done"
+
+
+def test_policy_question_without_relevant_context_returns_exact_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_retrieve(_query: str, top_k: int = 3, threshold: float = 0.35) -> RetrievalResultSet:
+        _ = (top_k, threshold)
+        return RetrievalResultSet(query="off-topic", items=[], threshold=0.35, above_threshold_items=[])
+
+    async def should_not_be_called(_question: str, _context: str) -> str:
+        raise AssertionError("policy LLM should not run without relevant context")
+
+    monkeypatch.setattr("src.agent.nodes.retrieve_policy_chunks", fake_retrieve)
+    monkeypatch.setattr("src.agent.nodes.call_llm_policy_response", should_not_be_called)
+
+    response = client.post(
+        "/chat/stream",
+        json={"user_id": "u-6", "session_id": "s-6", "message": "policy about cafeteria menu"},
+    )
+
+    assert response.status_code == 200
+    events = _extract_sse_events(response.text)
+    assert events[0] == {"event_type": "intent", "data": "policy_question"}
+    assert _token_text(events) == "I don't have information on that policy."
+    assert events[-1]["event_type"] == "done"
+
+
+def test_policy_generation_failure_emits_error_without_done(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_retrieve(_query: str, top_k: int = 3, threshold: float = 0.35) -> RetrievalResultSet:
+        _ = (top_k, threshold)
+        item = RetrievalResultItem(
+            chunk_id="access_policy.md:1",
+            text="Access requests need approval.",
+            score=0.84,
+            policy_category="Access",
+            source_document="access_policy.md",
+        )
+        return RetrievalResultSet(
+            query="access policy",
+            items=[item],
+            threshold=0.35,
+            above_threshold_items=[item],
+        )
+
+    async def failing_policy_llm(_question: str, _context: str) -> str:
+        raise RuntimeError("policy generation failed")
+
+    monkeypatch.setattr("src.agent.nodes.retrieve_policy_chunks", fake_retrieve)
+    monkeypatch.setattr("src.agent.nodes.call_llm_policy_response", failing_policy_llm)
+
+    response = client.post(
+        "/chat/stream",
+        json={"user_id": "u-7", "session_id": "s-7", "message": "policy for access"},
+    )
+
+    assert response.status_code == 200
+    events = _extract_sse_events(response.text)
+    assert events[0] == {"event_type": "intent", "data": "policy_question"}
+    assert events[1]["event_type"] == "error"
+    assert not any(event["event_type"] == "done" for event in events)
+
+
+def test_non_policy_direct_and_action_request_behavior_unchanged() -> None:
+    direct = client.post(
+        "/chat/stream",
+        json={"user_id": "u-8", "session_id": "s-8", "message": "hello there"},
+    )
+    assert direct.status_code == 200
+    direct_events = _extract_sse_events(direct.text)
+    assert direct_events[0] == {"event_type": "intent", "data": "direct_response"}
+    assert any(event["event_type"] == "token" for event in direct_events)
+    assert direct_events[-1]["event_type"] == "done"
+
+    action = client.post(
+        "/chat/stream",
+        json={"user_id": "u-9", "session_id": "s-9", "message": "please reset request"},
+    )
+    assert action.status_code == 200
+    action_events = _extract_sse_events(action.text)
+    assert action_events[0] == {"event_type": "intent", "data": "action_request"}
+    assert "This type of request isn't supported yet." in _token_text(action_events)
+    assert action_events[-1]["event_type"] == "done"

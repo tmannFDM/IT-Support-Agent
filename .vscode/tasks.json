@@ -1,0 +1,53 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "run-pytest-contract",
+			"type": "shell",
+			"command": ".\\.venv\\Scripts\\python.exe",
+			"args": [
+				"-m",
+				"pytest",
+				"-q",
+				"tests"
+			],
+			"isBackground": false
+		},
+		{
+			"label": "run-pytest-contract",
+			"type": "shell",
+			"command": ".\\.venv\\Scripts\\python.exe",
+			"args": [
+				"-m",
+				"pytest",
+				"-q",
+				"tests"
+			],
+			"isBackground": false
+		},
+		{
+			"label": "run-chat-contract-tests",
+			"type": "shell",
+			"command": ".\\.venv\\Scripts\\python.exe",
+			"args": [
+				"-m",
+				"pytest",
+				"-q",
+				"tests/contract/test_chat_stream.py"
+			],
+			"isBackground": false
+		},
+		{
+			"label": "run-full-tests",
+			"type": "shell",
+			"command": ".\\.venv\\Scripts\\python.exe",
+			"args": [
+				"-m",
+				"pytest",
+				"-q",
+				"tests"
+			],
+			"isBackground": false
+		}
+	]
+}

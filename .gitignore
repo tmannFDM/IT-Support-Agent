@@ -6,3 +6,12 @@ venv/
 .env
 .ruff_cache/
 *.egg-info/
+dist/
+build/
+*.log
+.env*
+.DS_Store
+Thumbs.db
+*.tmp
+*.swp
+.idea/
