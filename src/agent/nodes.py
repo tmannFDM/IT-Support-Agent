@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 
 import httpx
@@ -14,9 +15,38 @@ from src.agent.prompts import (
     POLICY_FALLBACK_TEXT,
     POLICY_GROUNDED_SYSTEM_PROMPT,
     PLACEHOLDER_UNSUPPORTED,
+    PROMPT_INJECTION_ERROR_CODE,
+    PROMPT_INJECTION_ERROR_MESSAGE,
 )
+from src.security import detect_prompt_injection, redact_pii
 from src.rag.retrieve import retrieve_policy_chunks
 from src.agent.state import AgentState, IntentLabel
+
+
+async def guardrail_check_node(state: AgentState) -> AgentState:
+    injection_result = detect_prompt_injection(state["message"])
+    if injection_result.injection_detected:
+        payload = {
+            "error_code": PROMPT_INJECTION_ERROR_CODE,
+            "message": PROMPT_INJECTION_ERROR_MESSAGE,
+        }
+        return {
+            **state,
+            "injection_detected": True,
+            "pii_detected": False,
+            "error_code": PROMPT_INJECTION_ERROR_CODE,
+            "error": json.dumps(payload),
+        }
+
+    redaction_result = redact_pii(state["message"])
+    return {
+        **state,
+        "message": redaction_result.redacted_message,
+        "injection_detected": False,
+        "pii_detected": redaction_result.pii_detected,
+        "redacted_email_count": redaction_result.redacted_email_count,
+        "redacted_phone_count": redaction_result.redacted_phone_count,
+    }
 
 
 def classify_intent_label(message: str) -> IntentLabel:

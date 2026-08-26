@@ -5,15 +5,33 @@ from langgraph.graph import END, StateGraph
 from src.agent.nodes import (
     answer_policy_question_node,
     classify_intent_node,
+    guardrail_check_node,
     generate_response_node,
 )
 from src.agent.state import AgentState
 
 _graph = StateGraph(AgentState)
+_graph.add_node("guardrail_check", guardrail_check_node)
 _graph.add_node("classify_intent", classify_intent_node)
 _graph.add_node("answer_policy_question", answer_policy_question_node)
 _graph.add_node("generate_response", generate_response_node)
-_graph.set_entry_point("classify_intent")
+_graph.set_entry_point("guardrail_check")
+
+
+def _route_from_guardrail(state: AgentState) -> str:
+    if state.get("error"):
+        return END
+    return "classify_intent"
+
+
+_graph.add_conditional_edges(
+    "guardrail_check",
+    _route_from_guardrail,
+    {
+        END: END,
+        "classify_intent": "classify_intent",
+    },
+)
 
 
 def _route_from_intent(state: AgentState) -> str:

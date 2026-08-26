@@ -14,6 +14,9 @@ LLM_DEFAULT_API_URL = "http://localhost:11434/api/chat"
 LLM_DEFAULT_MODEL = "llama3.2:3b"
 PLACEHOLDER_UNSUPPORTED = "This type of request isn't supported yet."
 
+PROMPT_INJECTION_ERROR_CODE = "ERR-PROMPT-INJECTION-BLOCKED"
+PROMPT_INJECTION_ERROR_MESSAGE = "Request blocked for safety."
+
 POLICY_FALLBACK_TEXT = "I don't have information on that policy."
 
 POLICY_GROUNDED_SYSTEM_PROMPT = (
