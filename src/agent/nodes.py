@@ -24,7 +24,10 @@ from src.security.injection import normalize_for_matching
 from src.rag.retrieve import retrieve_policy_chunks
 from src.agent.state import AgentState, IntentLabel
 from src.schemas.password_reset import PasswordResetResponse
+from src.schemas.ticket_create import TicketCreateResponse
+from src.tools.create_ticket import create_ticket
 from src.tools.password_reset import TEMP_PASSWORD_NOTE, password_reset
+from src.tools.ticket_store import get_ticket
 
 PASSWORD_RESET_INTENT_PHRASES = (
     "reset password",
@@ -54,6 +57,64 @@ URGENCY_PRESSURE_PHRASES = (
 )
 
 EMPLOYEE_ID_PATTERN = re.compile(r"\bEMP-\d{4}\b", re.IGNORECASE)
+TICKET_ID_PATTERN = re.compile(r"\bTKT-\d{4}\b", re.IGNORECASE)
+
+TICKET_CREATE_INTENT_PHRASES = (
+    "create ticket",
+    "open ticket",
+    "log ticket",
+    "file ticket",
+    "raise ticket",
+    "submit ticket",
+    "new ticket",
+)
+
+TICKET_CREATE_PATTERN = re.compile(
+    r"\b(create|open|log|file|raise|submit|new|make)\b(?:\s+\w+){0,2}?\s+ticket\b"
+)
+
+TICKET_CATEGORY_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    (
+        "Access",
+        ("access", "permission", "permissions", "role", "privilege", "privileges", "unauthorized"),
+    ),
+    (
+        "VPN",
+        ("vpn", "virtual private network", "remote tunnel", "remote access"),
+    ),
+    (
+        "Password",
+        ("password", "passcode", "credential", "credentials", "locked out"),
+    ),
+    (
+        "Hardware",
+        ("hardware", "laptop", "monitor", "keyboard", "mouse", "printer", "dock"),
+    ),
+    (
+        "Software",
+        ("software", "application", "app", "install", "installation", "update", "crash", "bug"),
+    ),
+)
+
+PRIORITY_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    (
+        "critical",
+        (
+            "critical",
+            "sev1",
+            "service down",
+            "production down",
+            "outage",
+            "cannot work",
+            "can't work",
+        ),
+    ),
+    (
+        "high",
+        ("urgent", "asap", "immediately", "blocked", "cannot access", "can't access"),
+    ),
+    ("low", ("minor", "low priority", "not urgent", "whenever")),
+)
 
 
 def is_password_reset_action_request(message: str) -> bool:
@@ -66,6 +127,41 @@ def _extract_valid_employee_id(message: str) -> str | None:
     if not match:
         return None
     return match.group(0).upper()
+
+
+def _extract_ticket_id(message: str) -> str | None:
+    match = TICKET_ID_PATTERN.search(message)
+    if not match:
+        return None
+    return match.group(0).upper()
+
+
+def is_ticket_status_action_request(message: str) -> bool:
+    ticket_id = _extract_ticket_id(message)
+    if ticket_id is None:
+        return False
+    return get_ticket(ticket_id) is not None
+
+
+def is_ticket_create_action_request(message: str) -> bool:
+    normalized = normalize_for_matching(message)
+    if "ticket" not in normalized:
+        return False
+    return bool(TICKET_CREATE_PATTERN.search(normalized))
+
+
+def _infer_ticket_category(normalized_message: str) -> str | None:
+    for category, keywords in TICKET_CATEGORY_KEYWORDS:
+        if any(keyword in normalized_message for keyword in keywords):
+            return category
+    return None
+
+
+def _infer_ticket_priority(normalized_message: str) -> str:
+    for priority, keywords in PRIORITY_KEYWORDS:
+        if any(keyword in normalized_message for keyword in keywords):
+            return priority
+    return "medium"
 
 
 def _normalize_reason_candidate(message: str) -> str:
@@ -142,6 +238,15 @@ async def guardrail_check_node(state: AgentState) -> AgentState:
 
 def classify_intent_label(message: str) -> IntentLabel:
     text = message.lower()
+
+    if is_ticket_status_action_request(message):
+        return "action_request"
+
+    if is_ticket_create_action_request(message):
+        return "action_request"
+
+    if is_password_reset_action_request(message):
+        return "action_request"
 
     if any(keyword in text for keyword in ("blocked", "forbidden", "bypass", "hack", "exploit")):
         return "blocked"
@@ -220,6 +325,69 @@ async def check_password_reset_node(state: AgentState) -> AgentState:
         "response": (
             "Password reset has been initiated. "
             "A temporary password has been issued and must be changed on next login."
+        ),
+    }
+
+
+async def check_ticket_status_node(state: AgentState) -> AgentState:
+    ticket_id = _extract_ticket_id(state["message"])
+    if ticket_id is None:
+        return {**state, "response": PLACEHOLDER_UNSUPPORTED}
+
+    ticket = get_ticket(ticket_id)
+    if ticket is None:
+        return {**state, "response": f"No ticket was found for {ticket_id}."}
+
+    return {
+        **state,
+        "ticket_id": ticket["ticket_id"],
+        "response": (
+            f"Ticket {ticket['ticket_id']} is {ticket['status']} with {ticket['priority']} priority "
+            f"in {ticket['category']}. Summary: {ticket['summary']}"
+        ),
+    }
+
+
+async def create_ticket_node(state: AgentState) -> AgentState:
+    normalized_message = normalize_for_matching(state["message"])
+    category = _infer_ticket_category(normalized_message)
+    if category is None:
+        return {
+            **state,
+            "error": (
+                "Please provide more detail so I can categorize your ticket "
+                "(VPN, Password, Hardware, Software, or Access)."
+            ),
+        }
+
+    priority = _infer_ticket_priority(normalized_message)
+
+    try:
+        tool_result = await create_ticket(
+            category=category,
+            priority=priority,
+            summary=state["message"].strip(),
+        )
+    except Exception as exc:  # noqa: BLE001
+        return {**state, "error": str(exc)}
+
+    response_payload = TicketCreateResponse(
+        ticket_id=tool_result.ticket_id,
+        category=tool_result.category,
+        priority=tool_result.priority,
+        status=tool_result.status,
+        summary=tool_result.summary,
+    )
+
+    return {
+        **state,
+        "ticket_id": response_payload.ticket_id,
+        "ticket_category": response_payload.category,
+        "ticket_priority": response_payload.priority,
+        "tool_call": response_payload.model_dump_json(),
+        "response": (
+            f"Ticket {response_payload.ticket_id} has been created with "
+            f"{response_payload.priority} priority."
         ),
     }
 
