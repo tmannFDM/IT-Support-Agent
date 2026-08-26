@@ -25,6 +25,13 @@ async def generate_chat_events(
         }
     )
 
+    if "error" in state and "intent" not in state:
+        if await is_disconnected():
+            return
+        blocked_error = ChatStreamEvent(event_type="error", data=state["error"])
+        yield format_sse(blocked_error)
+        return
+
     intent = ChatStreamEvent(event_type="intent", data=state["intent"])
 
     if await is_disconnected():
