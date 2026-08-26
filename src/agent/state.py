@@ -23,6 +23,9 @@ class AgentState(TypedDict, total=False):
     retrieved_chunks: list[dict[str, object]]
     response: str
     tool_call: str
+    ticket_id: str
+    ticket_category: Literal["VPN", "Password", "Hardware", "Software", "Access"]
+    ticket_priority: Literal["low", "medium", "high", "critical"]
     escalation_reason: Literal["vague_reason", "urgency_pressure", "invalid_employee_id"]
     error: str
     error_code: str

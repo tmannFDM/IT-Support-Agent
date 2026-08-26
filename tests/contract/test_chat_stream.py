@@ -1,5 +1,6 @@
 import asyncio
 import json
+import re
 
 import pytest
 from fastapi.testclient import TestClient
@@ -9,6 +10,7 @@ from src.api.routes import chat as chat_route
 from src.api.routes.chat import generate_chat_events
 from src.rag.retrieve import RetrievalResultItem, RetrievalResultSet
 from src.schemas.chat import ChatRequest
+from src.tools.ticket_store import reset_ticket_store
 
 client = TestClient(app)
 
@@ -31,6 +33,8 @@ def _error_payload(event: dict[str, str]) -> dict[str, str]:
 
 @pytest.fixture(autouse=True)
 def patch_llm(monkeypatch: pytest.MonkeyPatch) -> None:
+    reset_ticket_store()
+
     async def fake_llm(message: str) -> str:
         return f"Answer for: {message}"
 
@@ -599,3 +603,116 @@ def test_password_reset_vague_reason_escalates_with_valid_id_and_no_urgency() ->
     assert events[-1]["event_type"] == "done"
     assert "escalated to a human agent for identity verification." in _token_text(events)
     assert "escalation_reason" not in _token_text(events)
+
+
+def test_ticket_creation_success_emits_tool_call_token_and_done() -> None:
+    message = "Please create ticket for VPN gateway service down for remote staff"
+    response = client.post(
+        "/chat/stream",
+        json={
+            "user_id": "u-20",
+            "session_id": "s-20",
+            "message": message,
+        },
+    )
+
+    assert response.status_code == 200
+    events = _extract_sse_events(response.text)
+    assert events[0] == {"event_type": "intent", "data": "action_request"}
+    assert events[1]["event_type"] == "tool_call"
+    assert events[-1]["event_type"] == "done"
+
+    payload = json.loads(events[1]["data"])
+    assert re.match(r"^TKT-\d{4}$", payload["ticket_id"])
+    assert payload["category"] == "VPN"
+    assert payload["priority"] == "critical"
+    assert payload["status"] == "open"
+    assert payload["summary"] == message
+    assert f"Ticket {payload['ticket_id']} has been created" in _token_text(events)
+
+
+def test_ticket_creation_defaults_to_medium_priority_without_severity_keywords() -> None:
+    response = client.post(
+        "/chat/stream",
+        json={
+            "user_id": "u-21",
+            "session_id": "s-21",
+            "message": "Please open ticket for software installation failure in finance app",
+        },
+    )
+
+    assert response.status_code == 200
+    events = _extract_sse_events(response.text)
+    assert events[1]["event_type"] == "tool_call"
+    payload = json.loads(events[1]["data"])
+    assert payload["category"] == "Software"
+    assert payload["priority"] == "medium"
+
+
+def test_ticket_creation_vague_description_returns_error_without_tool_call() -> None:
+    response = client.post(
+        "/chat/stream",
+        json={
+            "user_id": "u-22",
+            "session_id": "s-22",
+            "message": "Please create ticket for my issue",
+        },
+    )
+
+    assert response.status_code == 200
+    events = _extract_sse_events(response.text)
+    assert events[0] == {"event_type": "intent", "data": "action_request"}
+    assert events[1]["event_type"] == "error"
+    assert "categorize your ticket" in events[1]["data"]
+    assert not any(event["event_type"] == "tool_call" for event in events)
+    assert not any(event["event_type"] == "done" for event in events)
+
+
+def test_newly_created_ticket_is_immediately_lookupable() -> None:
+    create_response = client.post(
+        "/chat/stream",
+        json={
+            "user_id": "u-23",
+            "session_id": "s-23",
+            "message": "Please create ticket for vpn connection dropping every hour",
+        },
+    )
+
+    assert create_response.status_code == 200
+    create_events = _extract_sse_events(create_response.text)
+    payload = json.loads(create_events[1]["data"])
+    ticket_id = payload["ticket_id"]
+
+    lookup_response = client.post(
+        "/chat/stream",
+        json={
+            "user_id": "u-23",
+            "session_id": "s-24",
+            "message": f"Please open request to check status of {ticket_id}",
+        },
+    )
+
+    assert lookup_response.status_code == 200
+    lookup_events = _extract_sse_events(lookup_response.text)
+    assert lookup_events[0] == {"event_type": "intent", "data": "action_request"}
+    assert not any(event["event_type"] == "tool_call" for event in lookup_events)
+    assert lookup_events[-1]["event_type"] == "done"
+    assert f"Ticket {ticket_id} is open" in _token_text(lookup_events)
+
+
+def test_mixed_intent_with_existing_ticket_id_routes_to_status_lookup() -> None:
+    response = client.post(
+        "/chat/stream",
+        json={
+            "user_id": "u-24",
+            "session_id": "s-25",
+            "message": "Please create a ticket update for TKT-1002",
+        },
+    )
+
+    assert response.status_code == 200
+    events = _extract_sse_events(response.text)
+    assert events[0] == {"event_type": "intent", "data": "action_request"}
+    assert not any(event["event_type"] == "tool_call" for event in events)
+    assert events[-1]["event_type"] == "done"
+    assert "Ticket TKT-1002 is open" in _token_text(events)
