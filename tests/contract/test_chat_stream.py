@@ -55,7 +55,7 @@ def test_chat_stream_direct_response_emits_intent_token_and_done() -> None:
 @pytest.mark.parametrize(
     ("message", "expected_intent"),
     [
-        ("please reset my password", "action_request"),
+        ("please create an access request", "action_request"),
         ("please escalate this", "escalation"),
         ("how to exploit admin panel", "blocked"),
     ],
@@ -486,3 +486,116 @@ def test_blocked_injection_forget_everything_phrase_returns_error_only(
     payload = _error_payload(events[0])
     assert payload["error_code"] == "ERR-PROMPT-INJECTION-BLOCKED"
     assert payload["message"] == "Request blocked for safety."
+
+
+def test_password_reset_valid_request_emits_tool_call_token_and_done() -> None:
+    response = client.post(
+        "/chat/stream",
+        json={
+            "user_id": "u-16",
+            "session_id": "s-16",
+            "message": (
+                "Please reset my password for EMP-1234 because my workstation migration "
+                "invalidated my old login profile"
+            ),
+        },
+    )
+
+    assert response.status_code == 200
+    events = _extract_sse_events(response.text)
+    event_types = [event["event_type"] for event in events]
+    assert event_types[0] == "intent"
+    assert event_types[1] == "tool_call"
+    assert event_types[-1] == "done"
+
+    payload = json.loads(events[1]["data"])
+    assert payload == {
+        "employee_id": "EMP-1234",
+        "status": "reset_issued",
+        "temporary_password_note": (
+            "A temporary password has been issued and will be required to be changed on next "
+            "login."
+        ),
+        "escalation_reason": None,
+    }
+    assert "Password reset has been initiated." in _token_text(events)
+
+
+def test_password_reset_invalid_employee_id_has_precedence_over_other_signals() -> None:
+    response = client.post(
+        "/chat/stream",
+        json={
+            "user_id": "u-17",
+            "session_id": "s-17",
+            "message": (
+                "Need password reset right now for EMP-12, please reset my password"
+            ),
+        },
+    )
+
+    assert response.status_code == 200
+    events = _extract_sse_events(response.text)
+    assert events[0] == {"event_type": "intent", "data": "action_request"}
+    assert events[1]["event_type"] == "tool_call"
+    payload = json.loads(events[1]["data"])
+    assert payload["status"] == "escalated"
+    assert payload["escalation_reason"] == "invalid_employee_id"
+    assert payload["temporary_password_note"] == (
+        "A temporary password has been issued and will be required to be changed on next login."
+    )
+    assert events[-1]["event_type"] == "done"
+    assert "escalated to a human agent for identity verification." in _token_text(events)
+    assert "escalation_reason" not in _token_text(events)
+
+
+def test_password_reset_urgency_pressure_escalates_when_employee_id_is_valid() -> None:
+    response = client.post(
+        "/chat/stream",
+        json={
+            "user_id": "u-18",
+            "session_id": "s-18",
+            "message": (
+                "Please reset my password for EMP-4321 immediately because I cannot access "
+                "the build deployment portal"
+            ),
+        },
+    )
+
+    assert response.status_code == 200
+    events = _extract_sse_events(response.text)
+    assert events[0] == {"event_type": "intent", "data": "action_request"}
+    assert events[1]["event_type"] == "tool_call"
+    payload = json.loads(events[1]["data"])
+    assert payload["status"] == "escalated"
+    assert payload["escalation_reason"] == "urgency_pressure"
+    assert payload["temporary_password_note"] == (
+        "A temporary password has been issued and will be required to be changed on next login."
+    )
+    assert events[-1]["event_type"] == "done"
+    assert "escalated to a human agent for identity verification." in _token_text(events)
+    assert "escalation_reason" not in _token_text(events)
+
+
+def test_password_reset_vague_reason_escalates_with_valid_id_and_no_urgency() -> None:
+    response = client.post(
+        "/chat/stream",
+        json={
+            "user_id": "u-19",
+            "session_id": "s-19",
+            "message": "EMP-5678 reset my password",
+        },
+    )
+
+    assert response.status_code == 200
+    events = _extract_sse_events(response.text)
+    assert events[0] == {"event_type": "intent", "data": "action_request"}
+    assert events[1]["event_type"] == "tool_call"
+    payload = json.loads(events[1]["data"])
+    assert payload["status"] == "escalated"
+    assert payload["escalation_reason"] == "vague_reason"
+    assert payload["temporary_password_note"] == (
+        "A temporary password has been issued and will be required to be changed on next login."
+    )
+    assert events[-1]["event_type"] == "done"
+    assert "escalated to a human agent for identity verification." in _token_text(events)
+    assert "escalation_reason" not in _token_text(events)
