@@ -96,6 +96,78 @@
 				"tests/contract/test_chat_stream.py"
 			],
 			"group": "test"
+		},
+		{
+			"label": "verify-contract-tests-008",
+			"type": "shell",
+			"command": ".\\.venv\\Scripts\\python.exe",
+			"args": [
+				"-m",
+				"pytest",
+				"-q",
+				"tests/contract/test_chat_stream.py"
+			],
+			"group": "test"
+		},
+		{
+			"label": "verify-full-tests-008",
+			"type": "shell",
+			"command": ".\\.venv\\Scripts\\python.exe",
+			"args": [
+				"-m",
+				"pytest",
+				"-q",
+				"tests"
+			],
+			"group": "test"
+		},
+		{
+			"label": "verify-contract-tests-008-r2",
+			"type": "shell",
+			"command": ".\\.venv\\Scripts\\python.exe",
+			"args": [
+				"-m",
+				"pytest",
+				"-q",
+				"tests/contract/test_chat_stream.py"
+			],
+			"group": "test"
+		},
+		{
+			"label": "verify-full-tests-008-r2",
+			"type": "shell",
+			"command": ".\\.venv\\Scripts\\python.exe",
+			"args": [
+				"-m",
+				"pytest",
+				"-q",
+				"tests"
+			],
+			"group": "test"
+		},
+		{
+			"label": "verify-contract-tests-009",
+			"type": "shell",
+			"command": ".\\.venv\\Scripts\\python.exe",
+			"args": [
+				"-m",
+				"pytest",
+				"-q",
+				"tests/contract/test_chat_stream.py"
+			],
+			"group": "test"
+		},
+		{
+			"label": "verify-full-tests-009",
+			"type": "shell",
+			"command": ".\\.venv\\Scripts\\python.exe",
+			"args": [
+				"-m",
+				"pytest",
+				"-q",
+				"tests"
+			],
+			"group": "test"
 		}
 	]
 }

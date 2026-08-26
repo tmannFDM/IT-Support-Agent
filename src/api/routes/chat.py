@@ -48,6 +48,14 @@ async def generate_chat_events(
         yield format_sse(error_event)
         return
 
+    if "tool_call" in state:
+        tool_call_event = ChatStreamEvent(event_type="tool_call", data=state["tool_call"])
+        yield format_sse(tool_call_event)
+        await asyncio.sleep(0)
+
+        if await is_disconnected():
+            return
+
     response_text = state.get("response", "")
     if state.get("intent") == "policy_question":
         token_parts = [response_text]

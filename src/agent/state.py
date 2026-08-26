@@ -22,5 +22,7 @@ class AgentState(TypedDict, total=False):
     cited_sources: list[str]
     retrieved_chunks: list[dict[str, object]]
     response: str
+    tool_call: str
+    escalation_reason: Literal["vague_reason", "urgency_pressure", "invalid_employee_id"]
     error: str
     error_code: str

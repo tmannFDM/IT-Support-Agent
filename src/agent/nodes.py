@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 
 import httpx
 
@@ -19,8 +20,98 @@ from src.agent.prompts import (
     PROMPT_INJECTION_ERROR_MESSAGE,
 )
 from src.security import detect_prompt_injection, redact_pii
+from src.security.injection import normalize_for_matching
 from src.rag.retrieve import retrieve_policy_chunks
 from src.agent.state import AgentState, IntentLabel
+from src.schemas.password_reset import PasswordResetResponse
+from src.tools.password_reset import TEMP_PASSWORD_NOTE, password_reset
+
+PASSWORD_RESET_INTENT_PHRASES = (
+    "reset password",
+    "reset my password",
+    "password reset",
+    "forgot password",
+    "forgot my password",
+    "locked out",
+)
+
+VAGUE_REASON_PHRASES = (
+    "reset my password",
+    "need password reset",
+    "forgot my password",
+    "please reset it",
+    "password reset",
+    "need a reset",
+)
+
+URGENCY_PRESSURE_PHRASES = (
+    "immediately",
+    "right now",
+    "asap",
+    "as soon as possible",
+    "urgent",
+    "or i'll be locked out permanently",
+)
+
+EMPLOYEE_ID_PATTERN = re.compile(r"\bEMP-\d{4}\b", re.IGNORECASE)
+
+
+def is_password_reset_action_request(message: str) -> bool:
+    normalized = normalize_for_matching(message)
+    return any(phrase in normalized for phrase in PASSWORD_RESET_INTENT_PHRASES)
+
+
+def _extract_valid_employee_id(message: str) -> str | None:
+    match = EMPLOYEE_ID_PATTERN.search(message)
+    if not match:
+        return None
+    return match.group(0).upper()
+
+
+def _normalize_reason_candidate(message: str) -> str:
+    normalized = normalize_for_matching(message)
+    without_employee_id = re.sub(r"\bemp-\d{4}\b", " ", normalized, flags=re.IGNORECASE)
+    collapsed = re.sub(r"[^a-z0-9' ]", " ", without_employee_id)
+    reduced = re.sub(r"\s+", " ", collapsed).strip()
+
+    # Reduce polite wrappers before fixed-phrase matching.
+    wrapper_pattern = re.compile(
+        r"^(please|kindly|can you|could you|would you|i need|need|help me|hey|hi)\s+"
+    )
+    changed = True
+    while changed and reduced:
+        reduced_after = wrapper_pattern.sub("", reduced).strip()
+        changed = reduced_after != reduced
+        reduced = reduced_after
+
+    if reduced.endswith(" please"):
+        reduced = reduced[: -len(" please")].strip()
+
+    return reduced
+
+
+def _is_vague_reason(normalized_reason: str) -> bool:
+    if not normalized_reason:
+        return True
+    return normalized_reason in VAGUE_REASON_PHRASES
+
+
+def _has_urgency_pressure(normalized_message: str) -> bool:
+    return any(phrase in normalized_message for phrase in URGENCY_PRESSURE_PHRASES)
+
+
+def _select_escalation_reason(
+    invalid_employee_id: bool,
+    urgency_pressure: bool,
+    vague_reason: bool,
+) -> str | None:
+    if invalid_employee_id:
+        return "invalid_employee_id"
+    if urgency_pressure:
+        return "urgency_pressure"
+    if vague_reason:
+        return "vague_reason"
+    return None
 
 
 async def guardrail_check_node(state: AgentState) -> AgentState:
@@ -56,7 +147,10 @@ def classify_intent_label(message: str) -> IntentLabel:
         return "blocked"
     if any(keyword in text for keyword in ("escalate", "human", "agent", "manager")):
         return "escalation"
-    if any(keyword in text for keyword in ("reset", "create", "open", "change", "request")):
+    if any(
+        keyword in text
+        for keyword in ("reset", "create", "open", "change", "request", "forgot", "locked out")
+    ):
         return "action_request"
     if any(
         keyword in text
@@ -81,6 +175,53 @@ async def classify_intent_node(state: AgentState) -> AgentState:
     _ = CLASSIFICATION_PROMPT
     intent = classify_intent_label(state["message"])
     return {**state, "intent": intent}
+
+
+async def check_password_reset_node(state: AgentState) -> AgentState:
+    normalized_message = normalize_for_matching(state["message"])
+    employee_id = _extract_valid_employee_id(state["message"])
+    normalized_reason = _normalize_reason_candidate(state["message"])
+
+    invalid_employee_id = employee_id is None
+    urgency_pressure = _has_urgency_pressure(normalized_message)
+    print(f"[DEBUG] normalized_reason={normalized_reason!r}")
+    vague_reason = _is_vague_reason(normalized_reason)
+    escalation_reason = _select_escalation_reason(
+        invalid_employee_id=invalid_employee_id,
+        urgency_pressure=urgency_pressure,
+        vague_reason=vague_reason,
+    )
+
+    if escalation_reason is not None:
+        escalation_payload = PasswordResetResponse(
+            employee_id=employee_id or "UNKNOWN",
+            status="escalated",
+            temporary_password_note=TEMP_PASSWORD_NOTE,
+            escalation_reason=escalation_reason,
+        )
+        return {
+            **state,
+            "escalation_reason": escalation_reason,
+            "tool_call": escalation_payload.model_dump_json(),
+            "response": (
+                "Your password reset request has been escalated to a human agent for identity "
+                "verification."
+            ),
+        }
+
+    try:
+        tool_result = await password_reset(employee_id=employee_id, reason=normalized_reason)
+    except Exception as exc:  # noqa: BLE001
+        return {**state, "error": str(exc)}
+
+    return {
+        **state,
+        "tool_call": tool_result.model_dump_json(),
+        "response": (
+            "Password reset has been initiated. "
+            "A temporary password has been issued and must be changed on next login."
+        ),
+    }
 
 
 async def call_llm_direct_response(message: str) -> str:
