@@ -25,7 +25,9 @@ from src.rag.retrieve import retrieve_policy_chunks
 from src.agent.state import AgentState, IntentLabel
 from src.schemas.password_reset import PasswordResetResponse
 from src.schemas.ticket_create import TicketCreateResponse
+from src.schemas.user_memory import UserMemoryFacts
 from src.tools.create_ticket import create_ticket
+from src.memory.store import get_user_memory_facts, upsert_user_memory_facts
 from src.tools.password_reset import TEMP_PASSWORD_NOTE, password_reset
 from src.tools.ticket_store import get_ticket
 
@@ -115,6 +117,81 @@ PRIORITY_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ),
     ("low", ("minor", "low priority", "not urgent", "whenever")),
 )
+
+DEVICE_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("laptop", ("laptop", "notebook", "macbook", "thinkpad")),
+    ("desktop", ("desktop", "workstation", "pc tower")),
+)
+
+REGION_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("APAC", ("apac", "asia pacific", "sydney", "singapore", "tokyo", "australia", "melbourne")),
+    ("EMEA", ("emea", "europe", "middle east", "africa", "london", "paris", "berlin")),
+    (
+        "AMER",
+        ("amer", "americas", "north america", "south america", "new york", "toronto", "usa"),
+    ),
+)
+
+TIMEZONE_PATTERN = re.compile(r"\b(AEST|PST|EST|CET|GMT)\b", re.IGNORECASE)
+
+
+def _detect_preferred_device(normalized_message: str) -> str | None:
+    for value, keywords in DEVICE_KEYWORDS:
+        if any(keyword in normalized_message for keyword in keywords):
+            return value
+    return None
+
+
+def _detect_office_region(normalized_message: str) -> str | None:
+    for region, keywords in REGION_KEYWORDS:
+        if any(keyword in normalized_message for keyword in keywords):
+            return region
+    return None
+
+
+def _detect_timezone_abbreviation(message: str) -> str | None:
+    match = TIMEZONE_PATTERN.search(message)
+    if not match:
+        return None
+    return match.group(1).upper()
+
+
+def _extract_user_memory_facts(message: str) -> dict[str, str]:
+    if "[REDACTED_" in message:
+        return {}
+
+    normalized = normalize_for_matching(message)
+    candidate = {
+        "preferred_device_type": _detect_preferred_device(normalized),
+        "office_region": _detect_office_region(normalized),
+        "timezone": _detect_timezone_abbreviation(message),
+    }
+
+    filtered = {k: v for k, v in candidate.items() if v is not None}
+    if not filtered:
+        return {}
+
+    # Enforce schema literals and closed whitelist.
+    facts = UserMemoryFacts(**filtered)
+    serialized = facts.model_dump(exclude_none=True)
+    return {k: v for k, v in serialized.items() if isinstance(v, str)}
+
+
+def _build_memory_context(facts: dict[str, str]) -> str:
+    if not facts:
+        return ""
+
+    parts: list[str] = []
+    device = facts.get("preferred_device_type")
+    region = facts.get("office_region")
+    timezone_value = facts.get("timezone")
+    if device:
+        parts.append(f"Preferred device: {device}")
+    if region:
+        parts.append(f"Office region: {region}")
+    if timezone_value:
+        parts.append(f"Timezone: {timezone_value}")
+    return "\n".join(parts)
 
 
 def is_password_reset_action_request(message: str) -> bool:
@@ -226,13 +303,26 @@ async def guardrail_check_node(state: AgentState) -> AgentState:
         }
 
     redaction_result = redact_pii(state["message"])
+    redacted_message = redaction_result.redacted_message
+
+    user_memory_facts: dict[str, str] = {}
+    try:
+        extracted = _extract_user_memory_facts(redacted_message)
+        if extracted:
+            upsert_user_memory_facts(state["user_id"], extracted)
+        user_memory_facts = get_user_memory_facts(state["user_id"])
+    except Exception:  # noqa: BLE001
+        # Memory read/write failures must not block normal response flow.
+        user_memory_facts = {}
+
     return {
         **state,
-        "message": redaction_result.redacted_message,
+        "message": redacted_message,
         "injection_detected": False,
         "pii_detected": redaction_result.pii_detected,
         "redacted_email_count": redaction_result.redacted_email_count,
         "redacted_phone_count": redaction_result.redacted_phone_count,
+        "user_memory_facts": user_memory_facts,
     }
 
 
@@ -476,6 +566,10 @@ async def answer_policy_question_node(state: AgentState) -> AgentState:
         ]
     )
 
+    memory_context = _build_memory_context(state.get("user_memory_facts", {}))
+    if memory_context:
+        context = f"{context}\n\nUser context:\n{memory_context}"
+
     try:
         answer = await call_llm_policy_response(state["message"], context)
     except Exception as exc:  # noqa: BLE001
@@ -500,6 +594,7 @@ async def answer_policy_question_node(state: AgentState) -> AgentState:
 
 async def generate_response_node(state: AgentState) -> AgentState:
     intent = state["intent"]
+    _ = state.get("user_memory_facts", {})
 
     if intent != "direct_response":
         return {**state, "response": PLACEHOLDER_UNSUPPORTED}
