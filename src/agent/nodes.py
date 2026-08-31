@@ -28,6 +28,7 @@ from src.schemas.ticket_create import TicketCreateResponse
 from src.schemas.user_memory import UserMemoryFacts
 from src.tools.create_ticket import create_ticket
 from src.memory.store import get_user_memory_facts, upsert_user_memory_facts
+from src.agent.session_history import build_prior_turn_messages, get_session_history
 from src.tools.password_reset import TEMP_PASSWORD_NOTE, password_reset
 from src.tools.ticket_store import get_ticket
 
@@ -482,16 +483,21 @@ async def create_ticket_node(state: AgentState) -> AgentState:
     }
 
 
-async def call_llm_direct_response(message: str) -> str:
+async def call_llm_direct_response(
+    message: str,
+    prior_messages: list[dict[str, str]] | None = None,
+) -> str:
     api_url = os.getenv(LLM_API_URL_ENV, LLM_DEFAULT_API_URL)
     model = os.getenv(LLM_MODEL_ENV, LLM_DEFAULT_MODEL)
 
+    messages = [{"role": "system", "content": DIRECT_RESPONSE_SYSTEM_PROMPT}]
+    if prior_messages:
+        messages.extend(prior_messages)
+    messages.append({"role": "user", "content": message})
+
     payload = {
         "model": model,
-        "messages": [
-            {"role": "system", "content": DIRECT_RESPONSE_SYSTEM_PROMPT},
-            {"role": "user", "content": message},
-        ],
+        "messages": messages,
         "stream": False,
     }
 
@@ -506,19 +512,27 @@ async def call_llm_direct_response(message: str) -> str:
         raise RuntimeError("LLM response was missing expected content") from exc
 
 
-async def call_llm_policy_response(question: str, context: str) -> str:
+async def call_llm_policy_response(
+    question: str,
+    context: str,
+    prior_messages: list[dict[str, str]] | None = None,
+) -> str:
     api_url = os.getenv(LLM_API_URL_ENV, LLM_DEFAULT_API_URL)
     model = os.getenv(LLM_MODEL_ENV, LLM_DEFAULT_MODEL)
 
+    messages = [{"role": "system", "content": POLICY_GROUNDED_SYSTEM_PROMPT}]
+    if prior_messages:
+        messages.extend(prior_messages)
+    messages.append(
+        {
+            "role": "user",
+            "content": f"Question: {question}\n\nContext:\n{context}",
+        }
+    )
+
     payload = {
         "model": model,
-        "messages": [
-            {"role": "system", "content": POLICY_GROUNDED_SYSTEM_PROMPT},
-            {
-                "role": "user",
-                "content": f"Question: {question}\n\nContext:\n{context}",
-            },
-        ],
+        "messages": messages,
         "stream": False,
     }
 
@@ -570,8 +584,13 @@ async def answer_policy_question_node(state: AgentState) -> AgentState:
     if memory_context:
         context = f"{context}\n\nUser context:\n{memory_context}"
 
+    prior_messages = build_prior_turn_messages(get_session_history(state.get("session_id", "")))
+
     try:
-        answer = await call_llm_policy_response(state["message"], context)
+        if prior_messages:
+            answer = await call_llm_policy_response(state["message"], context, prior_messages)
+        else:
+            answer = await call_llm_policy_response(state["message"], context)
     except Exception as exc:  # noqa: BLE001
         return {**state, "error": str(exc)}
 
@@ -599,8 +618,13 @@ async def generate_response_node(state: AgentState) -> AgentState:
     if intent != "direct_response":
         return {**state, "response": PLACEHOLDER_UNSUPPORTED}
 
+    prior_messages = build_prior_turn_messages(get_session_history(state.get("session_id", "")))
+
     try:
-        response = await call_llm_direct_response(state["message"])
+        if prior_messages:
+            response = await call_llm_direct_response(state["message"], prior_messages)
+        else:
+            response = await call_llm_direct_response(state["message"])
         return {**state, "response": response}
     except Exception as exc:  # noqa: BLE001
         return {**state, "error": str(exc)}

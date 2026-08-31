@@ -6,7 +6,9 @@ from fastapi import APIRouter, Request
 from fastapi.responses import StreamingResponse
 
 from src.agent.graph import run_agent_graph
+from src.agent.session_history import append_completed_exchange
 from src.api.sse import format_sse
+from src.security import redact_pii
 from src.schemas.chat import ChatRequest, ChatStreamEvent
 
 router = APIRouter(prefix="/chat", tags=["chat"])
@@ -73,6 +75,14 @@ async def generate_chat_events(
 
     done = ChatStreamEvent(event_type="done", data="")
     yield format_sse(done)
+
+    # Record short-term history only after successful completion of this response.
+    redacted_response = redact_pii(response_text).redacted_message
+    append_completed_exchange(
+        payload.session_id,
+        state.get("message", payload.message),
+        redacted_response,
+    )
 
 
 @router.post("/stream")

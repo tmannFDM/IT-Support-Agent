@@ -16,3 +16,5 @@ Thumbs.db
 *.swp
 .vscode/
 .idea/
+user_memory.json
+.chroma/
