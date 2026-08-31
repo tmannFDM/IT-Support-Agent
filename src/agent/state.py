@@ -21,6 +21,10 @@ class AgentState(TypedDict, total=False):
     used_context: bool
     cited_sources: list[str]
     retrieved_chunks: list[dict[str, object]]
+    user_memory_facts: dict[
+        Literal["preferred_device_type", "office_region", "timezone"],
+        str,
+    ]
     response: str
     tool_call: str
     ticket_id: str

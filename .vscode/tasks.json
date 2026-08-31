@@ -168,6 +168,30 @@
 				"tests"
 			],
 			"group": "test"
+		},
+		{
+			"label": "test-contract-memory-011",
+			"type": "shell",
+			"command": ".\\.venv\\Scripts\\python.exe",
+			"args": [
+				"-m",
+				"pytest",
+				"-q",
+				"tests/contract/test_chat_stream.py"
+			],
+			"isBackground": false
+		},
+		{
+			"label": "test-full-memory-011",
+			"type": "shell",
+			"command": ".\\.venv\\Scripts\\python.exe",
+			"args": [
+				"-m",
+				"pytest",
+				"-q",
+				"tests"
+			],
+			"isBackground": false
 		}
 	]
 }

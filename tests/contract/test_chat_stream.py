@@ -1,4 +1,5 @@
 import asyncio
+import importlib
 import json
 import re
 
@@ -10,6 +11,7 @@ from src.api.routes import chat as chat_route
 from src.api.routes.chat import generate_chat_events
 from src.rag.retrieve import RetrievalResultItem, RetrievalResultSet
 from src.schemas.chat import ChatRequest
+import src.memory.store as user_memory_store
 from src.tools.ticket_store import reset_ticket_store
 
 client = TestClient(app)
@@ -34,6 +36,7 @@ def _error_payload(event: dict[str, str]) -> dict[str, str]:
 @pytest.fixture(autouse=True)
 def patch_llm(monkeypatch: pytest.MonkeyPatch) -> None:
     reset_ticket_store()
+    user_memory_store.reset_user_memory_store()
 
     async def fake_llm(message: str) -> str:
         return f"Answer for: {message}"
@@ -716,3 +719,102 @@ def test_mixed_intent_with_existing_ticket_id_routes_to_status_lookup() -> None:
     assert not any(event["event_type"] == "tool_call" for event in events)
     assert events[-1]["event_type"] == "done"
     assert "Ticket TKT-1002 is open" in _token_text(events)
+
+
+def test_user_memory_fact_persists_and_is_retrievable_across_sessions() -> None:
+    first = client.post(
+        "/chat/stream",
+        json={
+            "user_id": "u-30",
+            "session_id": "s-30-a",
+            "message": "I am on a laptop",
+        },
+    )
+    assert first.status_code == 200
+
+    second = client.post(
+        "/chat/stream",
+        json={
+            "user_id": "u-30",
+            "session_id": "s-30-b",
+            "message": "hello there",
+        },
+    )
+    assert second.status_code == 200
+
+    stored = user_memory_store.get_user_memory_facts("u-30")
+    assert stored.get("preferred_device_type") == "laptop"
+
+
+def test_user_memory_stores_valid_fact_and_ignores_non_whitelisted_candidate() -> None:
+    response = client.post(
+        "/chat/stream",
+        json={
+            "user_id": "u-31",
+            "session_id": "s-31-a",
+            "message": "I work on a desktop and my favorite color is blue",
+        },
+    )
+
+    assert response.status_code == 200
+    stored = user_memory_store.get_user_memory_facts("u-31")
+    assert stored.get("preferred_device_type") == "desktop"
+    assert "favorite_color" not in stored
+    assert set(stored.keys()).issubset({"preferred_device_type", "office_region", "timezone"})
+
+
+def test_user_memory_persists_across_simulated_restart() -> None:
+    response = client.post(
+        "/chat/stream",
+        json={
+            "user_id": "u-32",
+            "session_id": "s-32-a",
+            "message": "My timezone is AEST",
+        },
+    )
+    assert response.status_code == 200
+
+    reloaded_store = importlib.reload(user_memory_store)
+    stored = reloaded_store.get_user_memory_facts("u-32")
+    assert stored.get("timezone") == "AEST"
+
+
+def test_no_memory_relevant_content_behaves_the_same_with_or_without_stored_facts() -> None:
+    seed = client.post(
+        "/chat/stream",
+        json={
+            "user_id": "u-33",
+            "session_id": "s-33-seed",
+            "message": "I usually work from Sydney office",
+        },
+    )
+    assert seed.status_code == 200
+
+    with_facts = client.post(
+        "/chat/stream",
+        json={
+            "user_id": "u-33",
+            "session_id": "s-33-a",
+            "message": "what can you do",
+        },
+    )
+    without_facts = client.post(
+        "/chat/stream",
+        json={
+            "user_id": "u-34",
+            "session_id": "s-34-a",
+            "message": "what can you do",
+        },
+    )
+
+    assert with_facts.status_code == 200
+    assert without_facts.status_code == 200
+
+    events_with = _extract_sse_events(with_facts.text)
+    events_without = _extract_sse_events(without_facts.text)
+
+    assert events_with[0] == {"event_type": "intent", "data": "direct_response"}
+    assert events_without[0] == {"event_type": "intent", "data": "direct_response"}
+    assert _token_text(events_with) == _token_text(events_without)
+    assert events_with[-1]["event_type"] == "done"
+    assert events_without[-1]["event_type"] == "done"
