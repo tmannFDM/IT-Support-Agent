@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 from src.api.main import app
 from src.api.routes import chat as chat_route
 from src.api.routes.chat import generate_chat_events
+import src.agent.session_history as session_history_store
 from src.rag.retrieve import RetrievalResultItem, RetrievalResultSet
 from src.schemas.chat import ChatRequest
 import src.memory.store as user_memory_store
@@ -37,6 +38,7 @@ def _error_payload(event: dict[str, str]) -> dict[str, str]:
 def patch_llm(monkeypatch: pytest.MonkeyPatch) -> None:
     reset_ticket_store()
     user_memory_store.reset_user_memory_store()
+    session_history_store.reset_session_history_store()
 
     async def fake_llm(message: str) -> str:
         return f"Answer for: {message}"
@@ -818,3 +820,316 @@ def test_no_memory_relevant_content_behaves_the_same_with_or_without_stored_fact
     assert _token_text(events_with) == _token_text(events_without)
     assert events_with[-1]["event_type"] == "done"
     assert events_without[-1]["event_type"] == "done"
+
+
+def test_session_history_store_reset_get_and_bounded_append_helpers() -> None:
+    session_id = "history-helper-session"
+    session_history_store.reset_session_history_store()
+
+    assert session_history_store.get_session_history(session_id) == []
+
+    for idx in range(1, 7):
+        session_history_store.append_completed_exchange(
+            session_id,
+            f"user-{idx}",
+            f"assistant-{idx}",
+        )
+
+    history = session_history_store.get_session_history(session_id)
+    assert len(history) == 5
+    assert history[0]["user_message_redacted"] == "user-2"
+    assert history[-1]["user_message_redacted"] == "user-6"
+
+    prior_messages = session_history_store.build_prior_turn_messages(history)
+    assert len(prior_messages) == 10
+    assert prior_messages[0] == {"role": "user", "content": "user-2"}
+    assert prior_messages[1] == {"role": "assistant", "content": "assistant-2"}
+
+
+def test_direct_response_follow_up_in_same_session_includes_prior_turn_messages(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: list[dict[str, object]] = []
+
+    async def capture_llm(
+        message: str,
+        prior_messages: list[dict[str, str]] | None = None,
+    ) -> str:
+        captured.append(
+            {
+                "message": message,
+                "prior_messages": list(prior_messages or []),
+            }
+        )
+        if "email setup" in message.lower():
+            return "Start by verifying mailbox settings and network reachability."
+        return "Also check client logs and retry after cache refresh."
+
+    monkeypatch.setattr("src.agent.nodes.call_llm_direct_response", capture_llm)
+
+    first = client.post(
+        "/chat/stream",
+        json={"user_id": "u-40", "session_id": "s-40", "message": "help with email setup"},
+    )
+    assert first.status_code == 200
+
+    second = client.post(
+        "/chat/stream",
+        json={"user_id": "u-40", "session_id": "s-40", "message": "what about contractors"},
+    )
+    assert second.status_code == 200
+
+    assert len(captured) == 2
+    second_prior = captured[1]["prior_messages"]
+    assert isinstance(second_prior, list)
+    assert second_prior
+    assert second_prior[0] == {"role": "user", "content": "help with email setup"}
+    assert second_prior[1] == {
+        "role": "assistant",
+        "content": "Start by verifying mailbox settings and network reachability.",
+    }
+
+
+def test_policy_response_follow_up_in_same_session_includes_prior_turn_messages(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_retrieve(_query: str, top_k: int = 3, threshold: float = 0.35) -> RetrievalResultSet:
+        _ = (top_k, threshold)
+        item = RetrievalResultItem(
+            chunk_id="vpn_policy.md:10",
+            text="VPN requires manager approval for all users.",
+            score=0.9,
+            policy_category="VPN",
+            source_document="vpn_policy.md",
+        )
+        return RetrievalResultSet(
+            query="vpn",
+            items=[item],
+            threshold=0.35,
+            above_threshold_items=[item],
+        )
+
+    captured: list[dict[str, object]] = []
+
+    async def capture_policy_llm(
+        question: str,
+        context: str,
+        prior_messages: list[dict[str, str]] | None = None,
+    ) -> str:
+        captured.append(
+            {
+                "question": question,
+                "context": context,
+                "prior_messages": list(prior_messages or []),
+            }
+        )
+        if "contractors" in question.lower():
+            return "Contractors also require manager approval."
+        return "VPN access requires manager approval."
+
+    monkeypatch.setattr("src.agent.nodes.retrieve_policy_chunks", fake_retrieve)
+    monkeypatch.setattr("src.agent.nodes.call_llm_policy_response", capture_policy_llm)
+
+    first = client.post(
+        "/chat/stream",
+        json={"user_id": "u-41", "session_id": "s-41", "message": "what is vpn policy"},
+    )
+    assert first.status_code == 200
+
+    second = client.post(
+        "/chat/stream",
+        json={
+            "user_id": "u-41",
+            "session_id": "s-41",
+            "message": "what is vpn policy for contractors",
+        },
+    )
+    assert second.status_code == 200
+
+    assert len(captured) == 2
+    second_prior = captured[1]["prior_messages"]
+    assert isinstance(second_prior, list)
+    assert second_prior
+    assert second_prior[0] == {"role": "user", "content": "what is vpn policy"}
+    assert second_prior[1] == {
+        "role": "assistant",
+        "content": "VPN access requires manager approval.\n\nSources: vpn_policy.md",
+    }
+
+
+def test_new_session_id_starts_with_empty_short_term_history_even_same_user(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: list[dict[str, object]] = []
+
+    async def capture_llm(
+        message: str,
+        prior_messages: list[dict[str, str]] | None = None,
+    ) -> str:
+        captured.append(
+            {
+                "message": message,
+                "prior_messages": list(prior_messages or []),
+            }
+        )
+        return f"Answer for: {message}"
+
+    monkeypatch.setattr("src.agent.nodes.call_llm_direct_response", capture_llm)
+
+    seed = client.post(
+        "/chat/stream",
+        json={"user_id": "u-42", "session_id": "s-42-a", "message": "hello from session a"},
+    )
+    assert seed.status_code == 200
+
+    fresh = client.post(
+        "/chat/stream",
+        json={"user_id": "u-42", "session_id": "s-42-b", "message": "follow up question"},
+    )
+    assert fresh.status_code == 200
+
+    assert len(captured) == 2
+    assert captured[1]["prior_messages"] == []
+
+
+def test_interleaved_sessions_do_not_leak_history_across_session_ids(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: list[dict[str, object]] = []
+
+    async def capture_llm(
+        message: str,
+        prior_messages: list[dict[str, str]] | None = None,
+    ) -> str:
+        captured.append(
+            {
+                "message": message,
+                "prior_messages": list(prior_messages or []),
+            }
+        )
+        return f"Answer for: {message}"
+
+    monkeypatch.setattr("src.agent.nodes.call_llm_direct_response", capture_llm)
+
+    response_a1 = client.post(
+        "/chat/stream",
+        json={"user_id": "u-43", "session_id": "s-43-a", "message": "session a first"},
+    )
+    assert response_a1.status_code == 200
+
+    response_b1 = client.post(
+        "/chat/stream",
+        json={"user_id": "u-43", "session_id": "s-43-b", "message": "session b first"},
+    )
+    assert response_b1.status_code == 200
+
+    response_a2 = client.post(
+        "/chat/stream",
+        json={"user_id": "u-43", "session_id": "s-43-a", "message": "session a second"},
+    )
+    assert response_a2.status_code == 200
+
+    assert len(captured) == 3
+    prior_for_a2 = captured[2]["prior_messages"]
+    assert isinstance(prior_for_a2, list)
+    assert prior_for_a2 == [
+        {"role": "user", "content": "session a first"},
+        {"role": "assistant", "content": "Answer for: session a first"},
+    ]
+
+
+def test_sixth_completed_turn_drops_oldest_exchange_for_window_of_five(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def deterministic_llm(
+        message: str,
+        prior_messages: list[dict[str, str]] | None = None,
+    ) -> str:
+        _ = prior_messages
+        return f"Answer for: {message}"
+
+    monkeypatch.setattr("src.agent.nodes.call_llm_direct_response", deterministic_llm)
+
+    session_id = "s-44-window"
+    for idx in range(1, 7):
+        response = client.post(
+            "/chat/stream",
+            json={
+                "user_id": "u-44",
+                "session_id": session_id,
+                "message": f"turn-{idx}",
+            },
+        )
+        assert response.status_code == 200
+
+    history = session_history_store.get_session_history(session_id)
+    assert len(history) == 5
+    assert history[0]["user_message_redacted"] == "turn-2"
+    assert history[-1]["user_message_redacted"] == "turn-6"
+
+
+def test_tool_invoking_paths_are_unchanged_when_history_exists(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def deterministic_llm(
+        message: str,
+        prior_messages: list[dict[str, str]] | None = None,
+    ) -> str:
+        _ = prior_messages
+        return f"Answer for: {message}"
+
+    monkeypatch.setattr("src.agent.nodes.call_llm_direct_response", deterministic_llm)
+
+    seed = client.post(
+        "/chat/stream",
+        json={
+            "user_id": "u-45",
+            "session_id": "s-45",
+            "message": "hello before action requests",
+        },
+    )
+    assert seed.status_code == 200
+
+    password_reset_response = client.post(
+        "/chat/stream",
+        json={
+            "user_id": "u-45",
+            "session_id": "s-45",
+            "message": "Please reset my password for EMP-1234 because my login stopped working",
+        },
+    )
+    assert password_reset_response.status_code == 200
+    password_events = _extract_sse_events(password_reset_response.text)
+    assert password_events[0]["data"] == "action_request"
+    assert password_events[1]["event_type"] == "tool_call"
+    password_payload = json.loads(password_events[1]["data"])
+    assert password_payload["status"] == "reset_issued"
+
+    ticket_create_response = client.post(
+        "/chat/stream",
+        json={
+            "user_id": "u-45",
+            "session_id": "s-45",
+            "message": "Please create ticket for vpn outage in remote office",
+        },
+    )
+    assert ticket_create_response.status_code == 200
+    create_events = _extract_sse_events(ticket_create_response.text)
+    assert create_events[0]["data"] == "action_request"
+    assert create_events[1]["event_type"] == "tool_call"
+    create_payload = json.loads(create_events[1]["data"])
+    assert create_payload["category"] == "VPN"
+
+    ticket_status_response = client.post(
+        "/chat/stream",
+        json={
+            "user_id": "u-45",
+            "session_id": "s-45",
+            "message": "Please check status for TKT-1002",
+        },
+    )
+    assert ticket_status_response.status_code == 200
+    status_events = _extract_sse_events(ticket_status_response.text)
+    assert status_events[0]["data"] == "action_request"
+    assert not any(event["event_type"] == "tool_call" for event in status_events)
+    assert "Ticket TKT-1002 is open" in _token_text(status_events)
