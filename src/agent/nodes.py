@@ -33,12 +33,13 @@ from src.tools.password_reset import TEMP_PASSWORD_NOTE, password_reset
 from src.tools.ticket_store import get_ticket
 
 PASSWORD_RESET_INTENT_PHRASES = (
-    "reset password",
     "reset my password",
-    "password reset",
-    "forgot password",
     "forgot my password",
-    "locked out",
+    "i'm locked out",
+    "i am locked out",
+    "locked myself out",
+    "please reset my password",
+    "need to reset my password",
 )
 
 VAGUE_REASON_PHRASES = (
@@ -326,17 +327,14 @@ async def guardrail_check_node(state: AgentState) -> AgentState:
         "user_memory_facts": user_memory_facts,
     }
 
-
 def classify_intent_label(message: str) -> IntentLabel:
     text = message.lower()
 
     if is_ticket_status_action_request(message):
         return "action_request"
-
-    if is_ticket_create_action_request(message):
-        return "action_request"
-
     if is_password_reset_action_request(message):
+        return "action_request"
+    if is_ticket_create_action_request(message):
         return "action_request"
 
     if any(keyword in text for keyword in ("blocked", "forbidden", "bypass", "hack", "exploit")):
@@ -345,27 +343,15 @@ def classify_intent_label(message: str) -> IntentLabel:
         return "escalation"
     if any(
         keyword in text
-        for keyword in ("reset", "create", "open", "change", "request", "forgot", "locked out")
+        for keyword in ("create", "open", "change", "request", "forgot", "locked out")
     ):
         return "action_request"
     if any(
         keyword in text
-        for keyword in (
-            "policy",
-            "compliance",
-            "allowed",
-            "rule",
-            "vpn",
-            "password",
-            "mfa",
-            "access",
-            "software",
-            "hardware",
-        )
+        for keyword in ("policy", "compliance", "allowed", "rule", "vpn", "password", "mfa", "access", "software", "hardware")
     ):
         return "policy_question"
     return "direct_response"
-
 
 async def classify_intent_node(state: AgentState) -> AgentState:
     _ = CLASSIFICATION_PROMPT
