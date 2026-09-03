@@ -146,9 +146,16 @@ export async function postChatStream(
  * Safe parser for error payloads
  */
 export function parseErrorPayload(data: string): ErrorPayload {
+  if (!data.trim()) {
+    return {
+      message: 'An error occurred. Please try again.',
+      code: 'UNKNOWN_ERROR',
+    };
+  }
+
   const parsed = safeJsonParse(data);
 
-  if (isErrorPayload(parsed)) {
+  if (isErrorPayload(parsed) && parsed.message.trim()) {
     return parsed;
   }
 

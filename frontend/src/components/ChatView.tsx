@@ -1,19 +1,26 @@
 /**
  * ChatView component for displaying conversation and message input
- * Handles message list scrolling and loading state
+ * Handles message list scrolling, loading state, and new features:
+ * - Feature 014: New chat button, persona selector, quick-prompts
  * Reference: specs/013-react-frontend-chat/plan.md (T010)
+ *           specs/014-frontend-polish/plan.md (T011, T016, T028)
  */
 
 import React, { useEffect, useRef } from 'react';
 import { ChatMessage } from '../types/chatUi';
 import { MessageBubble } from './MessageBubble';
+import { PersonaSelector } from './PersonaSelector';
+import { QuickPromptRow } from './QuickPromptRow';
 
 interface ChatViewProps {
   messages: ChatMessage[];
   isLoading: boolean;
   inputValue: string;
   onInputChange: (value: string) => void;
-  onSendMessage: () => void;
+  onSendMessage: (message?: string) => void;
+  selectedPersonaId: string;
+  onPersonaChange: (personaId: string) => void;
+  onNewChat: () => void;
 }
 
 export const ChatView: React.FC<ChatViewProps> = ({
@@ -22,6 +29,9 @@ export const ChatView: React.FC<ChatViewProps> = ({
   inputValue,
   onInputChange,
   onSendMessage,
+  selectedPersonaId,
+  onPersonaChange,
+  onNewChat,
 }) => {
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
@@ -43,11 +53,33 @@ export const ChatView: React.FC<ChatViewProps> = ({
     }
   };
 
+  const handleQuickPrompt = (message: string) => {
+    onInputChange(message);
+    onSendMessage(message);
+  };
+
   return (
     <div className="flex flex-col h-screen bg-white">
       {/* Header */}
-      <div className="border-b border-gray-300 p-4 bg-gray-50">
-        <h1 className="text-2xl font-bold text-gray-800">IT Support Chat</h1>
+      <div className="border-b border-gray-300 bg-gray-50 p-4">
+        <div className="mx-auto flex max-w-5xl flex-wrap items-center justify-between gap-3">
+          <h1 className="text-2xl font-bold text-gray-800">IT Support Chat</h1>
+          <div className="flex items-center gap-3">
+            <PersonaSelector
+              selectedPersonaId={selectedPersonaId}
+              onChange={onPersonaChange}
+              disabled={isLoading}
+            />
+            <button
+              type="button"
+              onClick={onNewChat}
+              disabled={isLoading}
+              className="rounded-lg border border-blue-600 px-4 py-2 text-sm font-medium text-blue-700 transition hover:bg-blue-50 disabled:cursor-not-allowed disabled:border-gray-300 disabled:text-gray-400"
+            >
+              New chat
+            </button>
+          </div>
+        </div>
       </div>
 
       {/* Messages area */}
@@ -67,6 +99,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
               role={msg.role}
               content={msg.content}
               isStreaming={msg.isStreaming}
+              intentValue={msg.intentValue}
             />
             {msg.toolCard && (
               <div className="flex justify-start mb-4">
@@ -93,7 +126,12 @@ export const ChatView: React.FC<ChatViewProps> = ({
 
       {/* Input area */}
       <div className="border-t border-gray-300 p-4 bg-gray-50">
-        <div className="flex gap-2">
+        <div className="mx-auto max-w-5xl">
+          <QuickPromptRow
+            isLoading={isLoading}
+            onPromptClick={handleQuickPrompt}
+          />
+          <div className="flex gap-2">
           <textarea
             value={inputValue}
             onChange={(e) => onInputChange(e.target.value)}
@@ -110,6 +148,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
           >
             Send
           </button>
+          </div>
         </div>
       </div>
     </div>

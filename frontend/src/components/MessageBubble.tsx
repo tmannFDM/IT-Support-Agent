@@ -6,17 +6,20 @@
 
 import React from 'react';
 import { MessageRole } from '../types/chatUi';
+import { IntentBadge } from './IntentBadge';
 
 interface MessageBubbleProps {
   role: MessageRole;
   content: string;
   isStreaming?: boolean;
+  intentValue?: string;
 }
 
 export const MessageBubble: React.FC<MessageBubbleProps> = ({
   role,
   content,
   isStreaming = false,
+  intentValue,
 }) => {
   if (role === 'user') {
     return (
@@ -41,12 +44,15 @@ export const MessageBubble: React.FC<MessageBubbleProps> = ({
 
   // Assistant variant
   return (
-    <div className="flex justify-start mb-4">
-      <div className="bg-gray-100 text-gray-900 px-4 py-2 rounded-lg max-w-md break-words">
-        {content}
-        {isStreaming && (
-          <span className="inline-block ml-2 animate-pulse">▌</span>
-        )}
+    <div className="mb-4 flex justify-start">
+      <div className="max-w-md break-words">
+        <div className="rounded-lg bg-gray-100 px-4 py-2 text-gray-900">
+          {content}
+          {isStreaming && (
+            <span className="ml-2 inline-block animate-pulse">▌</span>
+          )}
+        </div>
+        {intentValue && <IntentBadge intentValue={intentValue} />}
       </div>
     </div>
   );

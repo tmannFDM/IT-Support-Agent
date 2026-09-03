@@ -12,13 +12,13 @@ interface PasswordResetCardProps {
 
 export const PasswordResetCard: React.FC<PasswordResetCardProps> = ({ data }) => {
   const isEscalated = data.escalation_reason !== null;
-
-  const statusColor = {
+  const statusColors: Record<string, string> = {
     pending: 'bg-yellow-100 text-yellow-800',
     approved: 'bg-green-100 text-green-800',
     denied: 'bg-red-100 text-red-800',
     completed: 'bg-blue-100 text-blue-800',
-  }[data.status as keyof typeof statusColor] || 'bg-gray-100 text-gray-800';
+  };
+  const statusColor = statusColors[data.status] ?? 'bg-gray-100 text-gray-800';
 
   return (
     <div className={`${isEscalated ? 'bg-red-50' : 'bg-green-50'} border border-gray-300 rounded-lg p-4 max-w-md`}>

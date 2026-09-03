@@ -54,3 +54,15 @@ Expected validation response shape:
 ```bash
 .\.venv\Scripts\python.exe -m pytest -q tests
 ```
+
+## Frontend Chat
+
+Run the Vite frontend from `frontend/`:
+
+```bash
+npm.cmd run dev
+```
+
+The chat UI provides a New chat control that starts a fresh session, a persisted
+Alex/Jordan/Sam persona selector, visible backend intent badges, and five
+quick-prompt buttons for common demo flows.
