@@ -19,7 +19,6 @@ import { TicketCreateCard } from './components/TicketCreateCard';
 import {
   ChatMessage,
   ChatState,
-  ClientSessionIdentity,
   ChatRequestPayload,
 } from './types/chatUi';
 import { StreamEventEnvelope } from './types/events';
@@ -28,13 +27,28 @@ import {
   parseErrorPayload,
   parseToolCallPayload,
 } from './api/chatStream';
+import {
+  PERSONAS,
+  DEFAULT_PERSONA,
+} from './constants';
 
 function App() {
+  const [selectedPersonaId, setSelectedPersonaId] = useState<string>(() => {
+    try {
+      const storedPersonaId = localStorage.getItem('selectedPersonaId');
+      return storedPersonaId !== null && PERSONAS.some((persona) => persona.id === storedPersonaId)
+        ? storedPersonaId
+        : DEFAULT_PERSONA.id;
+    } catch {
+      return DEFAULT_PERSONA.id;
+    }
+  });
+
   const [state, setState] = useState<ChatState>(() => ({
     messages: [],
     isLoading: false,
     sessionIdentity: {
-      user_id: crypto.randomUUID(),
+      user_id: selectedPersonaId,
       session_id: crypto.randomUUID(),
     },
     inputValue: '',
@@ -57,9 +71,15 @@ function App() {
 
       switch (event_type) {
         case 'intent':
-          // Log intent for debugging only
+          // Attach intent value to last assistant message and log for debugging
           console.log('[intent]', data);
-          return prev;
+          if (lastMessage && lastMessage.role === 'assistant') {
+            messages[messages.length - 1] = {
+              ...lastMessage,
+              intentValue: data,
+            };
+          }
+          return { ...prev, messages };
         
         case 'token': {
             if (lastMessage && lastMessage.role === 'assistant') {
@@ -126,11 +146,45 @@ function App() {
     });
   };
 
+  const updatePersona = (personaId: string) => {
+    if (!PERSONAS.some((persona) => persona.id === personaId)) {
+      return;
+    }
+
+    setSelectedPersonaId(personaId);
+    try {
+      localStorage.setItem('selectedPersonaId', personaId);
+    } catch {
+      // Persistence is optional when browser storage is unavailable.
+    }
+    setState((prev) => ({
+      ...prev,
+      messages: [],
+      sessionIdentity: {
+        user_id: personaId,
+        session_id: crypto.randomUUID(),
+      },
+      inputValue: '',
+    }));
+  };
+
+  const handleNewChat = () => {
+    setState((prev) => ({
+      ...prev,
+      messages: [],
+      sessionIdentity: {
+        user_id: prev.sessionIdentity.user_id,
+        session_id: crypto.randomUUID(),
+      },
+      inputValue: '',
+    }));
+  };
+
   /**
    * Send message and start streaming
    */
-  const handleSendMessage = () => {
-    const trimmedInput = state.inputValue.trim();
+  const handleSendMessage = (message = state.inputValue) => {
+    const trimmedInput = message.trim();
 
     // Validate non-empty input
     if (!trimmedInput) {
@@ -220,6 +274,9 @@ function App() {
           setState((prev) => ({ ...prev, inputValue: value }))
         }
         onSendMessage={handleSendMessage}
+        selectedPersonaId={selectedPersonaId}
+        onPersonaChange={updatePersona}
+        onNewChat={handleNewChat}
       />
 
       {/* Render tool cards inline */}

@@ -11,18 +11,20 @@ interface TicketCreateCardProps {
 }
 
 export const TicketCreateCard: React.FC<TicketCreateCardProps> = ({ data }) => {
-  const statusColor = {
+  const statusColors: Record<string, string> = {
     open: 'bg-yellow-100 text-yellow-800',
     in_progress: 'bg-blue-100 text-blue-800',
     resolved: 'bg-green-100 text-green-800',
     closed: 'bg-gray-100 text-gray-800',
-  }[data.status as keyof typeof statusColor] || 'bg-gray-100 text-gray-800';
+  };
+  const statusColor = statusColors[data.status] ?? 'bg-gray-100 text-gray-800';
 
-  const priorityColor = {
+  const priorityColors: Record<string, string> = {
     low: 'bg-green-50',
     medium: 'bg-yellow-50',
     high: 'bg-red-50',
-  }[data.priority as keyof typeof priorityColor] || 'bg-gray-50';
+  };
+  const priorityColor = priorityColors[data.priority] ?? 'bg-gray-50';
 
   return (
     <div className={`${priorityColor} border border-gray-300 rounded-lg p-4 max-w-md`}>

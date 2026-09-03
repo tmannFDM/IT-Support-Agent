@@ -3,8 +3,6 @@
  * Reference: specs/013-react-frontend-chat/data-model.md
  */
 
-import { ToolPayload } from './toolPayloads';
-
 export type MessageRole = 'user' | 'assistant' | 'error';
 
 export interface ChatMessage {
@@ -14,6 +12,7 @@ export interface ChatMessage {
   isStreaming: boolean;
   toolCard: ToolCardModel | null;
   timestamp: Date;
+  intentValue?: string; // Added for Feature 014: Intent badges
 }
 
 // Tool card variants

@@ -394,7 +394,16 @@ async def check_password_reset_node(state: AgentState) -> AgentState:
     try:
         tool_result = await password_reset(employee_id=employee_id, reason=normalized_reason)
     except Exception as exc:  # noqa: BLE001
-        return {**state, "error": str(exc)}
+        message = str(exc) or f"{type(exc).__name__} (no message)"
+        return {
+            **state,
+            "error": json.dumps(
+                {
+                    "error_code": "ERR-PASSWORD-RESET-FAILED",
+                    "message": message,
+                }
+            ),
+        }
 
     return {
         **state,
@@ -431,9 +440,14 @@ async def create_ticket_node(state: AgentState) -> AgentState:
     if category is None:
         return {
             **state,
-            "error": (
-                "Please provide more detail so I can categorize your ticket "
-                "(VPN, Password, Hardware, Software, or Access)."
+            "error": json.dumps(
+                {
+                    "error_code": "ERR-TICKET-CATEGORY-REQUIRED",
+                    "message": (
+                        "Please provide more detail so I can categorize your ticket "
+                        "(VPN, Password, Hardware, Software, or Access)."
+                    ),
+                }
             ),
         }
 
@@ -446,7 +460,16 @@ async def create_ticket_node(state: AgentState) -> AgentState:
             summary=state["message"].strip(),
         )
     except Exception as exc:  # noqa: BLE001
-        return {**state, "error": str(exc)}
+        message = str(exc) or f"{type(exc).__name__} (no message)"
+        return {
+            **state,
+            "error": json.dumps(
+                {
+                    "error_code": "ERR-TICKET-CREATE-FAILED",
+                    "message": message,
+                }
+            ),
+        }
 
     response_payload = TicketCreateResponse(
         ticket_id=tool_result.ticket_id,
@@ -578,7 +601,16 @@ async def answer_policy_question_node(state: AgentState) -> AgentState:
         else:
             answer = await call_llm_policy_response(state["message"], context)
     except Exception as exc:  # noqa: BLE001
-        return {**state, "error": str(exc)}
+        message = str(exc) or f"{type(exc).__name__} (no message)"
+        return {
+            **state,
+            "error": json.dumps(
+                {
+                    "error_code": "ERR-POLICY-GENERATION-FAILED",
+                    "message": message,
+                }
+            ),
+        }
 
     return {
         **state,
@@ -613,4 +645,13 @@ async def generate_response_node(state: AgentState) -> AgentState:
             response = await call_llm_direct_response(state["message"])
         return {**state, "response": response}
     except Exception as exc:  # noqa: BLE001
-        return {**state, "error": str(exc)}
+        message = str(exc) or f"{type(exc).__name__} (no message)"
+        return {
+            **state,
+            "error": json.dumps(
+                {
+                    "error_code": "ERR-LLM-GENERATION-FAILED",
+                    "message": message,
+                }
+            ),
+        }

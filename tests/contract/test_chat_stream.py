@@ -106,7 +106,28 @@ def test_direct_response_generation_failure_emits_error_without_done(
     assert events[0]["event_type"] == "intent"
     assert events[0]["data"] == "direct_response"
     assert events[1]["event_type"] == "error"
+    payload = _error_payload(events[1])
+    assert payload["message"]
     assert not any(event["event_type"] == "done" for event in events)
+
+
+def test_direct_response_generation_failure_with_empty_message_uses_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def failing_llm(_message: str) -> str:
+        raise RuntimeError()
+
+    monkeypatch.setattr("src.agent.nodes.call_llm_direct_response", failing_llm)
+
+    response = client.post(
+        "/chat/stream",
+        json={"user_id": "u-3-empty", "session_id": "s-3-empty", "message": "what can you do"},
+    )
+
+    events = _extract_sse_events(response.text)
+    payload = _error_payload(events[1])
+    assert "RuntimeError" in payload["message"]
+    assert "no message" in payload["message"]
 
 
 def test_chat_stream_missing_and_empty_fields_return_422() -> None:
@@ -315,7 +336,45 @@ def test_policy_generation_failure_emits_error_without_done(
     events = _extract_sse_events(response.text)
     assert events[0] == {"event_type": "intent", "data": "policy_question"}
     assert events[1]["event_type"] == "error"
+    payload = _error_payload(events[1])
+    assert payload["message"]
     assert not any(event["event_type"] == "done" for event in events)
+
+
+def test_policy_generation_failure_with_empty_message_uses_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_retrieve(_query: str, top_k: int = 3, threshold: float = 0.35) -> RetrievalResultSet:
+        _ = (top_k, threshold)
+        item = RetrievalResultItem(
+            chunk_id="access_policy.md:1",
+            text="Access requests need approval.",
+            score=0.84,
+            policy_category="Access",
+            source_document="access_policy.md",
+        )
+        return RetrievalResultSet(
+            query="access policy",
+            items=[item],
+            threshold=0.35,
+            above_threshold_items=[item],
+        )
+
+    async def failing_policy_llm(_question: str, _context: str) -> str:
+        raise RuntimeError()
+
+    monkeypatch.setattr("src.agent.nodes.retrieve_policy_chunks", fake_retrieve)
+    monkeypatch.setattr("src.agent.nodes.call_llm_policy_response", failing_policy_llm)
+
+    response = client.post(
+        "/chat/stream",
+        json={"user_id": "u-7-empty", "session_id": "s-7-empty", "message": "policy for access"},
+    )
+
+    events = _extract_sse_events(response.text)
+    payload = _error_payload(events[1])
+    assert "RuntimeError" in payload["message"]
+    assert "no message" in payload["message"]
 
 
 def test_non_policy_direct_and_action_request_behavior_unchanged() -> None:
@@ -668,7 +727,88 @@ def test_ticket_creation_vague_description_returns_error_without_tool_call() -> 
     events = _extract_sse_events(response.text)
     assert events[0] == {"event_type": "intent", "data": "action_request"}
     assert events[1]["event_type"] == "error"
-    assert "categorize your ticket" in events[1]["data"]
+    payload = _error_payload(events[1])
+    assert payload["error_code"] == "ERR-TICKET-CATEGORY-REQUIRED"
+    assert "categorize your ticket" in payload["message"]
+    assert not any(event["event_type"] == "tool_call" for event in events)
+    assert not any(event["event_type"] == "done" for event in events)
+
+
+@pytest.mark.parametrize(
+    ("error", "expected_message"),
+    [
+        (RuntimeError("ticket creation failed"), "ticket creation failed"),
+        (RuntimeError(), "RuntimeError (no message)"),
+    ],
+)
+def test_ticket_creation_tool_failure_emits_error_envelope_without_done(
+    monkeypatch: pytest.MonkeyPatch,
+    error: RuntimeError,
+    expected_message: str,
+) -> None:
+    async def failing_create_ticket(category: str, priority: str, summary: str) -> None:
+        _ = (category, priority, summary)
+        raise error
+
+    monkeypatch.setattr("src.agent.nodes.create_ticket", failing_create_ticket)
+
+    response = client.post(
+        "/chat/stream",
+        json={
+            "user_id": "u-22-tool-error",
+            "session_id": "s-22-tool-error",
+            "message": "Please create ticket for VPN gateway unavailable",
+        },
+    )
+
+    assert response.status_code == 200
+    events = _extract_sse_events(response.text)
+    assert events[0] == {"event_type": "intent", "data": "action_request"}
+    assert events[1]["event_type"] == "error"
+    payload = _error_payload(events[1])
+    assert payload["error_code"] == "ERR-TICKET-CREATE-FAILED"
+    assert payload["message"] == expected_message
+    assert not any(event["event_type"] == "tool_call" for event in events)
+    assert not any(event["event_type"] == "done" for event in events)
+
+
+@pytest.mark.parametrize(
+    ("error", "expected_message"),
+    [
+        (RuntimeError("password reset failed"), "password reset failed"),
+        (RuntimeError(), "RuntimeError (no message)"),
+    ],
+)
+def test_password_reset_tool_failure_emits_error_envelope_without_done(
+    monkeypatch: pytest.MonkeyPatch,
+    error: RuntimeError,
+    expected_message: str,
+) -> None:
+    async def failing_password_reset(employee_id: str, reason: str) -> None:
+        _ = (employee_id, reason)
+        raise error
+
+    monkeypatch.setattr("src.agent.nodes.password_reset", failing_password_reset)
+
+    response = client.post(
+        "/chat/stream",
+        json={
+            "user_id": "u-16-tool-error",
+            "session_id": "s-16-tool-error",
+            "message": (
+                "Please reset my password for EMP-1234 because my workstation migration "
+                "invalidated my old login profile"
+            ),
+        },
+    )
+
+    assert response.status_code == 200
+    events = _extract_sse_events(response.text)
+    assert events[0] == {"event_type": "intent", "data": "action_request"}
+    assert events[1]["event_type"] == "error"
+    payload = _error_payload(events[1])
+    assert payload["error_code"] == "ERR-PASSWORD-RESET-FAILED"
+    assert payload["message"] == expected_message
     assert not any(event["event_type"] == "tool_call" for event in events)
     assert not any(event["event_type"] == "done" for event in events)
 
